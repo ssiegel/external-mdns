@@ -14,6 +14,10 @@
 
 package resource
 
+import(
+	"github.com/miekg/dns"
+)
+
 const (
 	Added   = "ADD"
 	Deleted = "DELETE"
@@ -24,7 +28,5 @@ const (
 type Resource struct {
 	SourceType string
 	Action     string
-	IP         string
-	Name       string
-	Namespace  string
+	Records    []dns.RR
 }

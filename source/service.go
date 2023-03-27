@@ -16,8 +16,10 @@ package source
 
 import (
 	"fmt"
+	"net"
 
 	"github.com/blake/external-mdns/resource"
+	"github.com/miekg/dns"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/informers"
@@ -26,10 +28,12 @@ import (
 
 // ServiceSource handles adding, updating, or removing mDNS record advertisements
 type ServiceSource struct {
-	namespace       string
-	publishInternal bool
-	notifyChan      chan<- resource.Resource
-	sharedInformer  cache.SharedIndexInformer
+	defaultNamespace string
+	withoutNamespace bool
+	namespace        string
+	publishInternal  bool
+	notifyChan       chan<- resource.Resource
+	sharedInformer   cache.SharedIndexInformer
 }
 
 // Run starts shared informers and waits for the shared informer cache to
@@ -43,79 +47,71 @@ func (s *ServiceSource) Run(stopCh chan struct{}) error {
 }
 
 func (s *ServiceSource) onAdd(obj interface{}) {
-	advertiseResource, err := s.buildRecord(obj, resource.Added)
-
-	if err != nil {
-		fmt.Printf("updating, %s", advertiseResource.Name)
+	s.notifyChan <- resource.Resource {
+		SourceType: "service",
+		Action:     resource.Added,
+		Records:    s.buildRecords(obj),
 	}
-
-	if advertiseResource.IP == "" {
-		return
-	}
-
-	s.notifyChan <- advertiseResource
 }
 
 func (s *ServiceSource) onDelete(obj interface{}) {
-	advertiseResource, err := s.buildRecord(obj, resource.Deleted)
-
-	if err != nil {
-		fmt.Printf("Error deleting, %s", advertiseResource.Name)
+	s.notifyChan <- resource.Resource {
+		SourceType: "service",
+		Action:     resource.Deleted,
+		Records:    s.buildRecords(obj),
 	}
-	s.notifyChan <- advertiseResource
 }
 
 func (s *ServiceSource) onUpdate(oldObj interface{}, newObj interface{}) {
-	oldResource, err1 := s.buildRecord(oldObj, resource.Deleted)
-	if err1 != nil {
-		fmt.Printf("Error parsing old service resource: %s", err1)
-	}
-	s.notifyChan <- oldResource
-
-	newResource, err2 := s.buildRecord(newObj, resource.Added)
-	if err2 != nil {
-		fmt.Printf("Error parsing new service resource: %s", err2)
-	}
-	s.notifyChan <- newResource
+	s.onDelete(oldObj)
+	s.onAdd(newObj)
 }
 
-func (s *ServiceSource) buildRecord(obj interface{}, action string) (resource.Resource, error) {
-
-	var advertiseObj = resource.Resource{
-		SourceType: "service",
-		Action:     action,
-	}
+func (s *ServiceSource) buildRecords(obj interface{}) []dns.RR {
+	var records []dns.RR
 
 	service, ok := obj.(*corev1.Service)
-
 	if !ok {
-		return advertiseObj, nil
+		return records
 	}
 
-	advertiseObj.Name = service.Name
-	advertiseObj.Namespace = service.Namespace
-
+	var ip net.IP
 	if service.Spec.Type == "ClusterIP" && s.publishInternal {
-		advertiseObj.IP = service.Spec.ClusterIP
+		ip = net.ParseIP(service.Spec.ClusterIP)
 	} else if service.Spec.Type == "LoadBalancer" {
 		for _, lb := range service.Status.LoadBalancer.Ingress {
 			if lb.IP != "" {
-				advertiseObj.IP = lb.IP
+				ip = net.ParseIP(lb.IP)
 			}
 		}
 	}
 
-	return advertiseObj, nil
+	if ip == nil {
+		return records
+	}
+
+	if s.namespace != "" && s.namespace != service.Namespace {
+		return records
+	}
+
+	records = buildARecord(fmt.Sprintf("%s.%s.local.", service.Name, service.Namespace), ip, true)
+	if service.Namespace == s.defaultNamespace || s.withoutNamespace {
+		records = append(records, buildARecord(fmt.Sprintf("%s.local.", service.Name), ip, false)...)
+	}
+
+	return records
 }
 
 // NewServicesWatcher creates an ServiceSource
-func NewServicesWatcher(factory informers.SharedInformerFactory, namespace string, notifyChan chan<- resource.Resource, publishInternal *bool) ServiceSource {
+func NewServicesWatcher(factory informers.SharedInformerFactory, defaultNamespace string, withoutNamespace bool, namespace string, notifyChan chan<- resource.Resource, publishInternal *bool) ServiceSource {
 	servicesInformer := factory.Core().V1().Services().Informer()
 	s := &ServiceSource{
-		namespace:       namespace,
-		publishInternal: *publishInternal,
-		notifyChan:      notifyChan,
-		sharedInformer:  servicesInformer,
+		defaultNamespace: defaultNamespace,
+		withoutNamespace: withoutNamespace,
+		namespace:        namespace,
+		publishInternal:  *publishInternal,
+		notifyChan:       notifyChan,
+		sharedInformer:   servicesInformer,
 	}
 	servicesInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc:    s.onAdd,

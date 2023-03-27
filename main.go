@@ -25,6 +25,7 @@ import (
 	"github.com/blake/external-mdns/mdns"
 	"github.com/blake/external-mdns/resource"
 	"github.com/blake/external-mdns/source"
+	"github.com/miekg/dns"
 	"k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/informers"
 )
@@ -90,46 +91,6 @@ func lookupEnvOrBool(key string, defaultVal bool) bool {
 	return defaultVal
 }
 
-func constructRecords(r resource.Resource) []string {
-	var records []string
-
-	ip := net.ParseIP(r.IP)
-	if ip == nil {
-		return records
-	}
-
-	// Construct reverse IP
-	reverseIP := net.IPv4(ip[15], ip[14], ip[13], ip[12])
-
-	// Publish A records resources as <name>.<namespace>.local
-	// Ensure corresponding PTR records map to this hostname
-	records = append(records, fmt.Sprintf("%s.%s.local. %d IN A %s", r.Name, r.Namespace, recordTTL, ip))
-	records = append(records, fmt.Sprintf("%s.in-addr.arpa. %d IN PTR %s.%s.local.", reverseIP, recordTTL, r.Name, r.Namespace))
-
-	// Publish services without the name in the namespace if any of the following
-	// criteria is satisfied:
-	// 1. The Service exists in the default namespace
-	// 2. The -without-namespace flag is equal to true
-	// 3. The record to be published is from an Ingress with a defined hostname
-	if r.Namespace == defaultNamespace || withoutNamespace || r.SourceType == "ingress" {
-		records = append(records, fmt.Sprintf("%s.local. %d IN A %s", r.Name, recordTTL, ip))
-	}
-
-	return records
-}
-
-func publishRecord(rr string) {
-	if err := mdns.Publish(rr); err != nil {
-		log.Fatalf(`Unable to publish record "%s": %v`, rr, err)
-	}
-}
-
-func unpublishRecord(rr string) {
-	if err := mdns.UnPublish(rr); err != nil {
-		log.Fatalf(`Unable to publish record "%s": %v`, rr, err)
-	}
-}
-
 var (
 	master           = ""
 	namespace        = ""
@@ -158,8 +119,8 @@ func main() {
 	flag.Parse()
 
 	if *test {
-		publishRecord("router.local. 60 IN A 192.168.1.254")
-		publishRecord("254.1.168.192.in-addr.arpa. 60 IN PTR router.local.")
+		mdns.Publish(&dns.A{Hdr: dns.RR_Header{Name: "router.local.", Ttl: uint32(recordTTL), Class: dns.ClassINET, Rrtype: dns.TypeA}, A: net.ParseIP("192.168.1.254")})
+		mdns.UnPublish(&dns.PTR{Hdr: dns.RR_Header{Name: "254.1.168.192.in-addr.arpa.", Ttl: uint32(recordTTL), Class: dns.ClassINET, Rrtype: dns.TypePTR}, Ptr: "router.local."})
 
 		select {}
 	}
@@ -190,7 +151,7 @@ func main() {
 			ingressController := source.NewIngressWatcher(factory, namespace, notifyMdns)
 			go ingressController.Run(stopper)
 		case "service":
-			serviceController := source.NewServicesWatcher(factory, namespace, notifyMdns, publishInternal)
+			serviceController := source.NewServicesWatcher(factory, defaultNamespace, withoutNamespace, namespace, notifyMdns, publishInternal)
 			go serviceController.Run(stopper)
 		}
 	}
@@ -198,14 +159,14 @@ func main() {
 	for {
 		select {
 		case advertiseResource := <-notifyMdns:
-			for _, record := range constructRecords(advertiseResource) {
+			for _, record := range advertiseResource.Records {
+				record.Header().Ttl = uint32(recordTTL)
+				record.Header().Class = dns.ClassINET
 				switch advertiseResource.Action {
 				case resource.Added:
-					log.Printf("Added %s\n", record)
-					publishRecord(record)
+					mdns.Publish(record)
 				case resource.Deleted:
-					log.Printf("Remove %s\n", record)
-					unpublishRecord(record)
+					mdns.UnPublish(record)
 				}
 			}
 		case <-stopper:

@@ -16,11 +16,11 @@ package source
 
 import (
 	"fmt"
-	"log"
+	"net"
 	"strings"
 
 	"github.com/blake/external-mdns/resource"
-	"github.com/jpillora/go-tld"
+	"github.com/miekg/dns"
 	v1 "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/informers"
@@ -45,104 +45,58 @@ func (i *IngressSource) Run(stopCh chan struct{}) error {
 }
 
 func (i *IngressSource) onAdd(obj interface{}) {
-	advertiseRecords, err := i.buildRecords(obj, resource.Added)
-
-	if err != nil {
-		fmt.Println("Error adding ingress")
-		return
-	}
-
-	for _, record := range advertiseRecords {
-		i.notifyChan <- record
+	i.notifyChan <- resource.Resource {
+		SourceType: "ingress",
+		Action:     resource.Added,
+		Records:    i.buildRecords(obj),
 	}
 }
 
 func (i *IngressSource) onDelete(obj interface{}) {
-	advertiseRecords, err := i.buildRecords(obj, resource.Deleted)
-
-	if err != nil {
-		fmt.Println("Error deleting ingress")
-		return
-	}
-
-	for _, record := range advertiseRecords {
-		i.notifyChan <- record
+	i.notifyChan <- resource.Resource {
+		SourceType: "ingress",
+		Action:     resource.Deleted,
+		Records:    i.buildRecords(obj),
 	}
 }
 
 func (i *IngressSource) onUpdate(oldObj interface{}, newObj interface{}) {
-	oldResources, err1 := i.buildRecords(oldObj, resource.Updated)
-	if err1 != nil {
-		fmt.Printf("Error gathering old ingress resources: %s", err1)
-	}
-
-	for _, record := range oldResources {
-		record.Action = resource.Deleted
-		i.notifyChan <- record
-	}
-
-	newResources, err2 := i.buildRecords(newObj, resource.Updated)
-	if err2 != nil {
-		fmt.Printf("Error gathering new ingress resources: %s", err2)
-	}
-
-	for _, record := range newResources {
-		record.Action = resource.Added
-		i.notifyChan <- record
-	}
+	i.onDelete(oldObj)
+	i.onAdd(newObj)
 }
 
-func (i *IngressSource) buildRecords(obj interface{}, action string) ([]resource.Resource, error) {
-	var records []resource.Resource
+func (i *IngressSource) buildRecords(obj interface{}) []dns.RR {
+	var records []dns.RR
 
 	ingress, ok := obj.(*v1.Ingress)
 	if !ok {
-		return records, nil
+		return records
 	}
 
-	var ipField string
+	var ip net.IP
 	for _, lb := range ingress.Status.LoadBalancer.Ingress {
 		if lb.IP != "" {
-			ipField = lb.IP
+			ip = net.ParseIP(lb.IP)
 		}
 	}
 
-	if ipField == "" {
-		return records, nil
+	if ip == nil {
+		return records
 	}
+
+        if i.namespace != "" && i.namespace != ingress.Namespace {
+                return records
+        }
 
 	// Advertise each hostname under this Ingress
-	var hostname string
 	for _, rule := range ingress.Spec.Rules {
 		// Skip rules with no hostname or that do not use the .local TLD
-		if rule.Host == "" || !strings.HasSuffix(rule.Host, ".local") {
-			continue
+		if rule.Host != "" && strings.HasSuffix(rule.Host, ".local") {
+			records = append(records, buildARecord(fmt.Sprintf("%s.", rule.Host), ip, false)...)
 		}
-
-		fakeURL := fmt.Sprintf("http://%s", rule.Host)
-		parsedHost, err := tld.Parse(fakeURL)
-
-		if err != nil {
-			log.Printf("Unable to parse hostname %s. %s", rule.Host, err.Error())
-			continue
-		}
-
-		if parsedHost.Subdomain != "" {
-			hostname = fmt.Sprintf("%s.%s", parsedHost.Subdomain, parsedHost.Domain)
-		} else {
-			hostname = parsedHost.Domain
-		}
-		advertiseObj := resource.Resource{
-			SourceType: "ingress",
-			Action:     action,
-			Name:       hostname,
-			Namespace:  ingress.Namespace,
-			IP:         ipField,
-		}
-
-		records = append(records, advertiseObj)
 	}
-	return records, nil
+
+	return records
 }
 
 // NewIngressWatcher creates an IngressSource

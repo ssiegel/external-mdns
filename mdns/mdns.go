@@ -42,27 +42,20 @@ func init() {
 }
 
 // Publish adds a record, describewrite tod in RFC XXX
-func Publish(r string) error {
-	rr, err := dns.NewRR(r)
-	if err != nil {
-		return err
-	}
+func Publish(rr dns.RR) {
+	log.Printf("Add %s\n", rr)
 	local.op <- operation{"add", &entry{rr}}
-	return nil
 }
 
 // UnPublish removes mDNS advertisement for the given record
-func UnPublish(r string) error {
-	rr, err := dns.NewRR(r)
-	if err != nil {
-		return err
-	}
+func UnPublish(rr dns.RR) {
+	log.Printf("Del %s\n", rr)
 	local.op <- operation{"del", &entry{rr}}
-	return nil
 }
 
 // Clear removes all entries from advertisement
 func Clear() {
+	log.Printf("Clear\n")
 	local.op <- operation{"clr", nil}
 }
 
