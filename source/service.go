@@ -15,8 +15,10 @@
 package source
 
 import (
+	"encoding/json"
 	"fmt"
 	"net"
+	"strings"
 
 	"github.com/blake/external-mdns/resource"
 	"github.com/miekg/dns"
@@ -28,10 +30,7 @@ import (
 
 // ServiceSource handles adding, updating, or removing mDNS record advertisements
 type ServiceSource struct {
-	defaultNamespace string
-	withoutNamespace bool
-	namespace        string
-	publishInternal  bool
+	publishAll       bool
 	notifyChan       chan<- resource.Resource
 	sharedInformer   cache.SharedIndexInformer
 }
@@ -75,8 +74,36 @@ func (s *ServiceSource) buildRecords(obj interface{}) []dns.RR {
 		return records
 	}
 
+	hostname, hasHostname := service.Annotations["external-mdns.blake.github.io/hostname"]
+	if !hasHostname {
+		hostname = fmt.Sprintf("%s.%s.local.", service.Name, service.Namespace)
+	}
+
+	instancename, hasInstancename := service.Annotations["external-mdns.blake.github.io/service-instance"]
+	if !hasInstancename {
+		instancename = fmt.Sprintf("%s/%s", service.Namespace, service.Name)
+	}
+
+	var txt []string
+	txtstr, hasTxt := service.Annotations["external-mdns.blake.github.io/service-txt"]
+	if txtstr != "" && hasTxt {
+		var txtmap map[string]string
+		if err := json.Unmarshal([]byte(txtstr), &txtmap); err == nil {
+			for k, v := range txtmap {
+				txt = append(txt, fmt.Sprintf("%s=%s", k, v))
+			}
+		}
+	}
+
+	if !s.publishAll && !hasHostname && !hasInstancename && !hasTxt {
+		_, hasPublish := service.Annotations["external-mdns.blake.github.io/publish"]
+		if !hasPublish {
+			return records
+		}
+	}
+
 	var ip net.IP
-	if service.Spec.Type == "ClusterIP" && s.publishInternal {
+	if service.Spec.Type == "ClusterIP" {
 		ip = net.ParseIP(service.Spec.ClusterIP)
 	} else if service.Spec.Type == "LoadBalancer" {
 		for _, lb := range service.Status.LoadBalancer.Ingress {
@@ -90,28 +117,28 @@ func (s *ServiceSource) buildRecords(obj interface{}) []dns.RR {
 		return records
 	}
 
-	if s.namespace != "" && s.namespace != service.Namespace {
-		return records
-	}
+        if !strings.HasSuffix(hostname, ".") {
+        	hostname = hostname + "."
+        }
+        if !strings.HasSuffix(hostname, ".local.") {
+        	hostname = hostname + "local."
+        }
 
-	records = buildARecord(fmt.Sprintf("%s.%s.local.", service.Name, service.Namespace), ip, true)
-	if service.Namespace == s.defaultNamespace || s.withoutNamespace {
-		records = append(records, buildARecord(fmt.Sprintf("%s.local.", service.Name), ip, false)...)
+	records = buildARecord(hostname, ip, true)
+	for _, port := range service.Spec.Ports {
+		records = append(records, buildSRVRecord(instancename, port.Name, port.Protocol, hostname, uint16(port.Port), txt)...)
 	}
 
 	return records
 }
 
 // NewServicesWatcher creates an ServiceSource
-func NewServicesWatcher(factory informers.SharedInformerFactory, defaultNamespace string, withoutNamespace bool, namespace string, notifyChan chan<- resource.Resource, publishInternal *bool) ServiceSource {
+func NewServicesWatcher(factory informers.SharedInformerFactory, publishAll bool, notifyChan chan<- resource.Resource) ServiceSource {
 	servicesInformer := factory.Core().V1().Services().Informer()
 	s := &ServiceSource{
-		defaultNamespace: defaultNamespace,
-		withoutNamespace: withoutNamespace,
-		namespace:        namespace,
-		publishInternal:  *publishInternal,
-		notifyChan:       notifyChan,
-		sharedInformer:   servicesInformer,
+		publishAll:      publishAll,
+		notifyChan:      notifyChan,
+		sharedInformer:  servicesInformer,
 	}
 	servicesInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc:    s.onAdd,

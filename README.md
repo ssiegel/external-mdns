@@ -16,13 +16,26 @@ clients via multicast DNS.
 Hostnames associated with Ingress resources, or exposed services of type
 LoadBalancer, will be advertised on the local network.
 
-By default External-mDNS will advertise hostnames for exposed resources in all
-namespaces. Use the `-namespace` flag to restrict advertisement to a single
-namespace, or `-without-namespace=true` for all namespaces.
+For ingresses, External-mDNS will advertise hostnames in all namespaces by
+default. Use the `-namespace` flag to restrict advertisement to a single
+namespace.
 
-DNS records are advertised with the format `<hostname/service_name>.<namespace>.local`.
-In addition, hostnames for resources in the `-default-namespace` will also be
-advertised with a short name of `<hostname/service_name>.local`.
+For services, External-mDNS will by default only advertise resources that have
+the `external-mdns.blake.github.io/publish` annotation (or any of the other
+External-mDNS specific annotations) set. Use the `-publish-all` flag to publish
+all services including the ones without annotations.
+
+The default advertised DNS hostname for services is of the format
+`<service_name>.<namespace>.local`. It can be changed by setting the
+`external-mdns.blake.github.io/hostname` annotation to the desired value.
+
+The published DNS-SD service instance name has the format
+`<namespace>/<service_name>` by default. It can be changed using the annotation
+`external-mdns.blake.github.io/service-instance`.
+
+The published TXT record for DNS-SD is empty by default. To change that, set the
+`external-mdns.blake.github.io/service-txt` annotation to a JSON object
+containing the desired key/value pairs according to RFC 6763.
 
 ## Deploying External-mDNS
 
