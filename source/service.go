@@ -84,13 +84,15 @@ func (s *ServiceSource) buildRecords(obj interface{}) []dns.RR {
 		instancename = fmt.Sprintf("%s/%s", service.Namespace, service.Name)
 	}
 
-	var txt []string
+	svctxt := map[string][]string{}
 	txtstr, hasTxt := service.Annotations["external-mdns.blake.github.io/service-txt"]
 	if txtstr != "" && hasTxt {
-		var txtmap map[string]string
+		var txtmap map[string]map[string]string
 		if err := json.Unmarshal([]byte(txtstr), &txtmap); err == nil {
-			for k, v := range txtmap {
-				txt = append(txt, fmt.Sprintf("%s=%s", k, v))
+			for svc, txt := range txtmap {
+				for k, v := range txt {
+					svctxt[svc] = append(svctxt[svc], fmt.Sprintf("%s=%s", k, v))
+				}
 			}
 		}
 	}
@@ -126,7 +128,7 @@ func (s *ServiceSource) buildRecords(obj interface{}) []dns.RR {
 
 	records = buildARecord(hostname, ip, true)
 	for _, port := range service.Spec.Ports {
-		records = append(records, buildSRVRecord(instancename, port.Name, port.Protocol, hostname, uint16(port.Port), txt)...)
+		records = append(records, buildSRVRecord(instancename, port.Name, port.Protocol, hostname, uint16(port.Port), svctxt[port.Name])...)
 	}
 
 	return records

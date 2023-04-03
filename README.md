@@ -34,8 +34,23 @@ The published DNS-SD service instance name has the format
 `external-mdns.blake.github.io/service-instance`.
 
 The published TXT record for DNS-SD is empty by default. To change that, set the
-`external-mdns.blake.github.io/service-txt` annotation to a JSON object
-containing the desired key/value pairs according to RFC 6763.
+`external-mdns.blake.github.io/service-txt` annotation to a JSON object with the
+port name/service name as keys. Set the values to to another nested JSON object
+containing the desired key/value pairs according to RFC 6763, for example:
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: example
+  annotations:
+    external-mdns.blake.github.io/service-txt: '{"http": {"path": "/example"} }'
+spec:
+  type: LoadBalancer
+  ports:
+    - name: http
+      port: 80
+```
 
 ## Deploying External-mDNS
 
